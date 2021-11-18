@@ -17,28 +17,44 @@ limitations under the License.
 package controllers
 
 import (
-	"net/http"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/github"
-	"strings"
 	"context"
 	"fmt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/github"
 	"io/ioutil"
+	"net/http"
+	"os"
+	"strings"
 )
 
-var gitHubConf = &oauth2.Config{
-	ClientID:     "<edited>",
-	ClientSecret: "<edited>",
-	RedirectURL:  "http://localhost:8000/github/callback",
-	Endpoint: github.Endpoint,
-}
+var gitHubConf *oauth2.Config
 
+func initGitHubConfig(w http.ResponseWriter) bool {
+	filename := "github.txt"
+	if value, ok := os.LookupEnv("GITHUB_CRED_PATH"); ok {
+		filename = value
+	}
+	credential, err := readCredsFile(filename)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to read GitHub credential file: %s", err.Error()), http.StatusInternalServerError)
+		return false
+	}
+	gitHubConf = &oauth2.Config{
+		ClientID:     credential.clientId,
+		ClientSecret: credential.clientSecret,
+		RedirectURL:  credential.redirectURL,
+		Endpoint:     github.Endpoint,
+	}
+	return true
+}
 
 const gitHubUserAPI = "https://api.github.com/user?access_token="
 
-
-
 var GitHubAuthenticate = func(w http.ResponseWriter, r *http.Request) {
+
+	if gitHubConf == nil && !initGitHubConfig(w) {
+		return
+	}
 
 	scopes := r.FormValue("scopes")
 	gitHubConf.Scopes = strings.Split(scopes, ",")
@@ -49,10 +65,11 @@ var GitHubAuthenticate = func(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-
-
-
 var GitHubCallback = func(w http.ResponseWriter, r *http.Request) {
+
+	if gitHubConf == nil && !initGitHubConfig(w) {
+		return
+	}
 
 	//state := r.FormValue("state");
 	//TODO: validate state
@@ -61,10 +78,9 @@ var GitHubCallback = func(w http.ResponseWriter, r *http.Request) {
 	token, err := gitHubConf.Exchange(context.Background(), code)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, "Error in GitHub token exchange: %s",err.Error())
+		fmt.Fprintf(w, "Error in GitHub token exchange: %s", err.Error())
 		return
 	}
-
 
 	req, err := http.NewRequest("GET", gitHubUserAPI, nil)
 	if err != nil {
@@ -72,12 +88,12 @@ var GitHubCallback = func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Failed making GitHub request: %s", err.Error())
 		return
 	}
-	req.Header.Set("Authorization", "Bearer " + token.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	client := &http.Client{}
 	response, err := client.Do(req)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w,"Failed getting GitHub user: %s", err.Error())
+		fmt.Fprintf(w, "Failed getting GitHub user: %s", err.Error())
 		return
 	}
 
@@ -85,11 +101,11 @@ var GitHubCallback = func(w http.ResponseWriter, r *http.Request) {
 	content, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w,"Failed pasring GitHub user data: %s", err.Error())
+		fmt.Fprintf(w, "Failed pasring GitHub user data: %s", err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w,"Oauth Token: %s <br/>", token.AccessToken)
+	fmt.Fprintf(w, "Oauth Token: %s <br/>", token.AccessToken)
 	fmt.Fprintf(w, "User data: %s", string(content))
 
 }
