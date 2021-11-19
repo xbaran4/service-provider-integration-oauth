@@ -1,15 +1,14 @@
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
+# Compiled Object files, Static and Dynamic libs (Shared Objects)
+*.o
+*.a
 *.so
-*.dylib
 
-# Test binary, built with `go test -c`
+# Folders
+_obj
+_test
+
+*.exe
 *.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
+*.prof
 *.out
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
+.idea/
