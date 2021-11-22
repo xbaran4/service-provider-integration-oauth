@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"os"
 )
 
 var client = &http.Client{
@@ -32,6 +33,8 @@ var client = &http.Client{
 }
 
 func TestMain(m *testing.M) {
+	os.Setenv("GITHUB_CRED_PATH", "github_test.txt")
+	os.Setenv("QUAY_CRED_PATH", "quay_test.txt")
 	go start()
 	m.Run()
 }
