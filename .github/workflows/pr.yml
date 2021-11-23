@@ -61,29 +61,17 @@ jobs:
           go get -u github.com/google/addlicense
           go get -u golang.org/x/tools/cmd/goimports
           git reset HEAD --hard
-          make check_fmt
-          if [[ $? != 0 ]]
-          then
-            echo "not well formatted sources are found:"
-            git --no-pager diff
-            exit 1
-          fi
-      - name: Check manifests
-        run: |
-          pip install yq
-          # Note: fmt is necessary after generate since generated sources will
-          #       fail format check by default.
-          make generate fmt manifests
+          go fmt -x ./...
           if [[ ! -z $(git status -s) ]]
           then
-            echo "generated sources are not up to date:"
+            echo "not well formatted sources are found:"
             git --no-pager diff
             exit 1
           fi
       - name: Run Go Tests
         run: |
           python -m pip install --upgrade pip yq
-          make test
+          go test ./...
       - name: Codecov
         uses: codecov/codecov-action@v2.1.0
   docker:
