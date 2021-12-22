@@ -15,13 +15,9 @@ package controllers
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
-	"spi-oauth/config"
 	"strings"
 	"testing"
 	"time"
@@ -31,59 +27,21 @@ import (
 	"golang.org/x/oauth2"
 )
 
-func TestQuayAuthenticateRedirect(t *testing.T) {
-	q := QuayController{
-		Config: config.ServiceProviderConfiguration{
-			ClientId:     "clientId",
-			ClientSecret: "clientSecret",
-			RedirectUrl:  "http://redirect.url",
-		},
-	}
-
-	req := httptest.NewRequest("GET", "/?state=state&scopes=a,b", nil)
-	res := httptest.NewRecorder()
-
-	q.Authenticate(res, req)
-
-	assert.Equal(t, res.Code, http.StatusFound)
-
-	redirect, err := url.Parse(res.Header().Get("Location"))
-	assert.NoError(t, err)
-	assert.Equal(t, "https", redirect.Scheme)
-	assert.Equal(t, "quay.io", redirect.Host)
-	assert.Equal(t, "/oauth/authorize", redirect.Path)
-	assert.Equal(t, "clientId", redirect.Query().Get("client_id"))
-	assert.Equal(t, "http://redirect.url", redirect.Query().Get("redirect_uri"))
-	assert.Equal(t, "code", redirect.Query().Get("response_type"))
-	assert.Equal(t, "state", redirect.Query().Get("state"))
-	assert.Equal(t, "a b", redirect.Query().Get("scope"))
-}
-
-func TestQuayCallbackReachesOutForToken(t *testing.T) {
-	q := QuayController{
-		Config: config.ServiceProviderConfiguration{
-			ClientId:     "clientId",
-			ClientSecret: "clientSecret",
-			RedirectUrl:  "http://redirect.url",
-		},
-	}
-
-	req := httptest.NewRequest("GET", "/?state=state&scopes=a,b", nil)
-	res := httptest.NewRecorder()
-
-	bakedResponse, _ := json.Marshal(oauth2.Token{
-		AccessToken:  "token",
-		TokenType:    "jwt",
-		RefreshToken: "refresh",
-		Expiry:       time.Now(),
+func TestTokenSentWhenRetrievingQuayUserDetails(t *testing.T) {
+	bakedResponse, _ := json.Marshal(map[string]interface{}{
+		"username": "mylogin",
 	})
 
-	quayReached := false
+	githubReached := false
+	authorizationSet := false
 
-	ctx := context.WithValue(context.TODO(), oauth2.HTTPClient, &http.Client{
+	metadata, err := retrieveQuayUserDetails(&http.Client{
 		Transport: fakeRoundTrip(func(r *http.Request) (*http.Response, error) {
-			if strings.HasPrefix(r.URL.String(), "https://quay.io") {
-				quayReached = true
+			if strings.HasPrefix(r.URL.String(), "https://quay.io/api/v1/user") {
+				githubReached = true
+
+				authorizationSet = r.Header.Get("Authorization") == "Bearer tkn"
+
 				return &http.Response{
 					StatusCode: 200,
 					Header:     http.Header{},
@@ -94,10 +52,15 @@ func TestQuayCallbackReachesOutForToken(t *testing.T) {
 
 			return nil, fmt.Errorf("unexpected request to: %s", r.URL.String())
 		}),
+	}, &oauth2.Token{
+		AccessToken:  "tkn",
+		TokenType:    "asdf",
+		RefreshToken: "rtkn",
+		Expiry:       time.Now(),
 	})
 
-	q.Callback(ctx, res, req)
-
-	assert.True(t, quayReached)
-	// TODO finish this test once we write the token somewhere
+	assert.NoError(t, err)
+	assert.True(t, githubReached)
+	assert.True(t, authorizationSet)
+	assert.Equal(t, "mylogin", metadata.UserName)
 }

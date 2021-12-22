@@ -14,49 +14,29 @@
 package controllers
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"spi-oauth/config"
+	"strconv"
 
+	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
 	"go.uber.org/zap"
-	"golang.org/x/oauth2/github"
+	"golang.org/x/oauth2"
 )
-
-type GitHubController struct {
-	Config config.ServiceProviderConfiguration
-}
-
-var _ Controller = (*GitHubController)(nil)
 
 const gitHubUserAPI = "https://api.github.com/user"
 
-func (g GitHubController) Authenticate(w http.ResponseWriter, r *http.Request) {
-	commonAuthenticate(w, r, &g.Config, github.Endpoint)
-}
-
-func (g GitHubController) Callback(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	token, err := finishOAuthExchange(ctx, r, &g.Config, github.Endpoint)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		logAndWriteResponse(w, "error in GitHub token exchange", err)
-		return
-	}
-
+// retrieveGitHubUserDetails reads the user details from the GitHub API.
+func retrieveGitHubUserDetails(client *http.Client, token *oauth2.Token) (*v1beta1.TokenMetadata, error) {
 	req, err := http.NewRequest("GET", gitHubUserAPI, nil)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed to make GitHub request", err)
-		return
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	client := &http.Client{}
 	response, err := client.Do(req)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed to get GitHub user", err)
-		return
+		return nil, err
 	}
 
 	defer func() {
@@ -65,13 +45,36 @@ func (g GitHubController) Callback(ctx context.Context, w http.ResponseWriter, r
 		}
 	}()
 
-	content, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed to parse GitHub user data", err)
-		return
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to retrieve user details from GitHub")
 	}
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Oauth Token: %s <br/>", token.AccessToken)
-	fmt.Fprintf(w, "User data: %s", string(content))
+
+	data, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	content := map[string]interface{}{}
+
+	if err = json.Unmarshal(data, &content); err != nil {
+		return nil, err
+	}
+
+	var userId string
+	userName := content["login"].(string)
+
+	if len(userName) == 0 {
+		return nil, fmt.Errorf("failed to determine the user name from the GitHub response")
+	}
+
+	if _, ok := content["id"]; ok {
+		userId = strconv.FormatFloat(content["id"].(float64), 'f', -1, 64)
+	} else {
+		return nil, fmt.Errorf("failed to determine the user ID from the GitHub response")
+	}
+
+	return &v1beta1.TokenMetadata{
+		UserId:   userId,
+		UserName: userName,
+	}, nil
 }

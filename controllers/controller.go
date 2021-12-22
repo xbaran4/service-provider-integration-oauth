@@ -17,57 +17,89 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"spi-oauth/config"
-	"strings"
 
-	"go.uber.org/zap"
+	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
+	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/tokenstorage"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/github"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/redhat-appstudio/service-provider-integration-oauth/authentication"
+	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
 )
 
+// Controller implements the OAuth flow. There are specific implementations for each service provider type. These
+// are usually instances of the commonController with service-provider-specific configuration.
 type Controller interface {
+	// Authenticate handles the initial OAuth request. It should validate that the request is authenticated in Kubernetes
+	// compose the authenticated OAuth state and return a redirect to the service-provider OAuth endpoint with the state.
 	Authenticate(w http.ResponseWriter, r *http.Request)
+
+	// Callback finishes the OAuth flow. It handles the final redirect from the OAuth flow of the service provider.
 	Callback(ctx context.Context, w http.ResponseWriter, r *http.Request)
 }
 
-func FromConfiguration(configuration config.ServiceProviderConfiguration) (Controller, error) {
-	switch configuration.ServiceProviderType {
+// oauthFinishResult is an enum listing the possible results of authentication during the commonController.finishOAuthExchange
+// method.
+type oauthFinishResult int
+
+const (
+	oauthFinishAuthenticated oauthFinishResult = iota
+	oauthFinishK8sAuthRequired
+	oauthFinishError
+)
+
+// FromConfiguration is a factory function to create instances of the Controller based on the service provider
+// configuration.
+func FromConfiguration(fullConfig config.Configuration, spConfig config.ServiceProviderConfiguration) (Controller, error) {
+	authtor, err := authentication.NewFromConfig(fullConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	scheme := runtime.NewScheme()
+	if err = corev1.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+
+	if err = v1beta1.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+
+	cl, err := fullConfig.KubernetesClient(client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+
+	ts, err := tokenstorage.New(cl)
+	if err != nil {
+		return nil, err
+	}
+
+	var endpoint oauth2.Endpoint
+	var userDetails func(*http.Client, *oauth2.Token) (*v1beta1.TokenMetadata, error)
+
+	switch spConfig.ServiceProviderType {
 	case config.ServiceProviderTypeGitHub:
-		return &GitHubController{Config: configuration}, nil
+		endpoint = github.Endpoint
+		userDetails = retrieveGitHubUserDetails
 	case config.ServiceProviderTypeQuay:
+		endpoint = quayEndpoint
+		userDetails = retrieveQuayUserDetails
+	default:
 		return nil, fmt.Errorf("not implemented yet")
 	}
-	return nil, fmt.Errorf("not implemented yet")
-}
 
-func newOAuth2Config(cfg *config.ServiceProviderConfiguration) oauth2.Config {
-	return oauth2.Config{
-		ClientID:     cfg.ClientId,
-		ClientSecret: cfg.ClientSecret,
-		RedirectURL:  cfg.RedirectUrl,
-	}
-}
-
-func commonAuthenticate(w http.ResponseWriter, r *http.Request, cfg *config.ServiceProviderConfiguration, endpoint oauth2.Endpoint) {
-	oauthCfg := newOAuth2Config(cfg)
-	oauthCfg.Endpoint = endpoint
-	oauthCfg.Scopes = strings.Split(r.FormValue("scopes"), ",")
-
-	state := r.FormValue("state")
-	url := oauthCfg.AuthCodeURL(state)
-
-	http.Redirect(w, r, url, http.StatusFound)
-}
-
-func finishOAuthExchange(ctx context.Context, r *http.Request, cfg *config.ServiceProviderConfiguration, endpoint oauth2.Endpoint) (*oauth2.Token, error) {
-	oauthCfg := newOAuth2Config(cfg)
-	oauthCfg.Endpoint = endpoint
-
-	code := r.FormValue("code")
-
-	return oauthCfg.Exchange(ctx, code)
-}
-
-func logAndWriteResponse(w http.ResponseWriter, msg string, err error) {
-	_, _ = fmt.Fprintf(w, msg+": ", err.Error())
-	zap.L().Error(msg, zap.Error(err))
+	return &commonController{
+		Config:               spConfig,
+		JwtSigningSecret:     fullConfig.SharedSecret,
+		Authenticator:        authtor,
+		K8sClient:            cl,
+		TokenStorage:         ts,
+		Endpoint:             endpoint,
+		BaseUrl:              fullConfig.BaseUrl,
+		RetrieveUserMetadata: userDetails,
+	}, nil
 }

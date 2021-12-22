@@ -14,54 +14,36 @@
 package controllers
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"spi-oauth/config"
 
+	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
 	"go.uber.org/zap"
+
 	"golang.org/x/oauth2"
 )
 
-type QuayController struct {
-	Config config.ServiceProviderConfiguration
-}
-
-var _ Controller = (*QuayController)(nil)
-
 const quayUserAPI = "https://quay.io/api/v1/user"
 
+// quayEndpoint is the OAuth endpoints specification of quay.io
 var quayEndpoint = oauth2.Endpoint{
 	AuthURL:  "https://quay.io/oauth/authorize",
 	TokenURL: "https://quay.io/oauth/token",
 }
 
-func (q QuayController) Authenticate(w http.ResponseWriter, r *http.Request) {
-	commonAuthenticate(w, r, &q.Config, quayEndpoint)
-}
-
-func (q QuayController) Callback(ctx context.Context, w http.ResponseWriter, r *http.Request) {
-	token, err := finishOAuthExchange(ctx, r, &q.Config, quayEndpoint)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "error in Quay token exchange", err)
-		return
-	}
-
+// retrieveQuayUserDetails reads the user details from the Quay API. Note that Quay doesn't really have a notion
+// of user ID.s
+func retrieveQuayUserDetails(client *http.Client, token *oauth2.Token) (*v1beta1.TokenMetadata, error) {
 	req, err := http.NewRequest("GET", quayUserAPI, nil)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed making Quay request", err)
-		return
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	client := &http.Client{}
 	response, err := client.Do(req)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed getting Quay user", err)
-		return
+		return nil, err
 	}
 
 	defer func() {
@@ -70,14 +52,29 @@ func (q QuayController) Callback(ctx context.Context, w http.ResponseWriter, r *
 		}
 	}()
 
-	content, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		logAndWriteResponse(w, "failed parsing Quay user data", err)
-		return
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to retrieve user details from Quay")
 	}
 
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Oauth Token: %s", token.AccessToken)
-	fmt.Fprintf(w, "User data: %s", string(content))
+	data, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	content := map[string]interface{}{}
+
+	if err = json.Unmarshal(data, &content); err != nil {
+		return nil, err
+	}
+
+	var username string
+	if u, ok := content["username"]; ok {
+		username = u.(string)
+	} else {
+		return nil, fmt.Errorf("failed to determine the user name from the Quay response")
+	}
+
+	return &v1beta1.TokenMetadata{
+		UserName: username,
+	}, nil
 }
