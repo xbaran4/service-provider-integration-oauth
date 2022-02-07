@@ -89,6 +89,7 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config) {
 	}
 	router.HandleFunc("/health", OkHandler).Methods("GET")
 	router.HandleFunc("/ready", OkHandler).Methods("GET")
+	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static/")))
 
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), router)
 	if err != nil {
