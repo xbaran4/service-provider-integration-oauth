@@ -142,7 +142,12 @@ func (c commonController) Callback(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	redirectLocation := r.FormValue("redirect_after_login")
+	if redirectLocation == "" {
+		redirectLocation = strings.TrimSuffix(c.BaseUrl, "/") + "/" + "callback_success.html"
+	}
+	http.Redirect(w, r, redirectLocation, http.StatusFound)
+
 }
 
 // finishOAuthExchange implements the bulk of the Callback function. It returns the token, if obtained, the decoded

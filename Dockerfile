@@ -7,6 +7,7 @@ WORKDIR /spi-oauth
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
+COPY static/callback_success.html static/callback_success.html
 
 # Copy the go sources
 COPY main.go main.go
@@ -22,6 +23,7 @@ RUN export ARCH="$(uname -m)" && if [[ ${ARCH} == "x86_64" ]]; then export ARCH=
 FROM registry.access.redhat.com/ubi8-minimal:8.4-212
 
 COPY --from=builder /spi-oauth/spi-oauth /spi-oauth
+COPY --from=builder /spi-oauth/static/callback_success.html /static/callback_success.html
 
 WORKDIR /
 USER 65532:65532
