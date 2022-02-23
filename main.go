@@ -16,14 +16,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/alexflint/go-arg"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-
-	"github.com/alexflint/go-arg"
 
 	"github.com/redhat-appstudio/service-provider-integration-oauth/controllers"
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
@@ -39,9 +39,40 @@ type cliArgs struct {
 	KubeConfig string `arg:"-k, --kubeconfig, env" default:"" help:""`
 }
 
+type viewData struct {
+	Title   string
+	Message string
+}
+
 func OkHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
+
+func CallbackSuccessHandler(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "static/callback_success.html")
+}
+
+func CallbackErrorHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	errorMsg := q.Get("error")
+	errorDescription := q.Get("error_description")
+	data := viewData{
+		Title:   errorMsg,
+		Message: errorDescription,
+	}
+	tmpl, _ := template.ParseFiles("static/callback_error.html")
+
+	err := tmpl.Execute(w, data)
+	if err == nil {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		zap.L().Error("failed to process template: %s", zap.Error(err))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(fmt.Sprintf("Error response returned to OAuth callback: %s. Message: %s ", errorMsg, errorDescription)))
+	}
+
+}
+
 func main() {
 	args := cliArgs{}
 	arg.MustParse(&args)
@@ -74,6 +105,12 @@ func main() {
 func start(cfg config.Configuration, port int, kubeConfig *rest.Config) {
 	router := mux.NewRouter()
 
+	//static routes first
+	router.HandleFunc("/health", OkHandler).Methods("GET")
+	router.HandleFunc("/ready", OkHandler).Methods("GET")
+	router.HandleFunc("/callback_success", CallbackSuccessHandler).Methods("GET")
+	router.NewRoute().Path("/{type}/callback").Queries("error", "", "error_description", "").HandlerFunc(CallbackErrorHandler)
+
 	for _, sp := range cfg.ServiceProviders {
 		controller, err := controllers.FromConfiguration(cfg, sp, kubeConfig)
 		if err != nil {
@@ -87,9 +124,6 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config) {
 			controller.Callback(context.Background(), w, r)
 		})).Methods("GET")
 	}
-	router.HandleFunc("/health", OkHandler).Methods("GET")
-	router.HandleFunc("/ready", OkHandler).Methods("GET")
-	router.PathPrefix("/").Handler(http.FileServer(http.Dir("./static/")))
 
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), router)
 	if err != nil {
