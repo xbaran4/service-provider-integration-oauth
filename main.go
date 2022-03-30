@@ -77,15 +77,28 @@ func main() {
 	args := cliArgs{}
 	arg.MustParse(&args)
 
-	var logger *zap.Logger
+	var loggerConfig zap.Config
 	if args.DevMode {
-		logger, _ = zap.NewDevelopment()
+		loggerConfig = zap.NewDevelopmentConfig()
 	} else {
-		logger, _ = zap.NewProduction()
+		loggerConfig = zap.NewProductionConfig()
 	}
-	if logger != nil {
-		zap.ReplaceGlobals(logger)
+	loggerConfig.OutputPaths = []string{"stdout"}
+	loggerConfig.ErrorOutputPaths = []string{"stdout"}
+	logger, err := loggerConfig.Build()
+	if err != nil {
+		// there's nothing we can do about the error to print to stderr, but the linter requires us to at least pretend
+		_, _ = fmt.Fprintf(os.Stderr, "failed to initialize logging: %s", err.Error())
+		os.Exit(1)
 	}
+	defer func() {
+		// linter says we need to handle the error from this call, but this is called after main with no way of us doing
+		// anything about the error. So the anon func and this assignment is here purely to make the linter happy.
+		_ = logger.Sync()
+	}()
+
+	undo := zap.ReplaceGlobals(logger)
+	defer undo()
 
 	cfg, err := config.LoadFrom(args.ConfigFile)
 	if err != nil {
@@ -125,6 +138,7 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config) {
 		})).Methods("GET")
 	}
 
+	zap.L().Info("Starting the server", zap.Int("port", port))
 	err := http.ListenAndServe(fmt.Sprintf(":%d", port), router)
 	if err != nil {
 		zap.L().Error("failed to start the HTTP server", zap.Error(err))
