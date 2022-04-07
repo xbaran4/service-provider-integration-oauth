@@ -16,20 +16,14 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"html/template"
 	"net/http"
 
-	"k8s.io/client-go/rest"
-
-	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
+	"github.com/alexedwards/scs"
+	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/tokenstorage"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/redhat-appstudio/service-provider-integration-oauth/authentication"
-	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
 )
 
 // Controller implements the OAuth flow. There are specific implementations for each service provider type. These
@@ -55,34 +49,11 @@ const (
 
 // FromConfiguration is a factory function to create instances of the Controller based on the service provider
 // configuration.
-func FromConfiguration(fullConfig config.Configuration, spConfig config.ServiceProviderConfiguration, kubeConfig *rest.Config) (Controller, error) {
-	authtor, err := authentication.NewFromConfig(fullConfig, kubeConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	scheme := runtime.NewScheme()
-	if err = corev1.AddToScheme(scheme); err != nil {
-		return nil, err
-	}
-
-	if err = v1beta1.AddToScheme(scheme); err != nil {
-		return nil, err
-	}
-
-	cl, err := client.New(kubeConfig, client.Options{Scheme: scheme})
-	if err != nil {
-		return nil, err
-	}
-
-	vaultStorage, err := tokenstorage.NewVaultStorage("spi-oauth", fullConfig.VaultHost, fullConfig.ServiceAccountTokenFilePath)
-	if err != nil {
-		return nil, err
-	}
+func FromConfiguration(fullConfig config.Configuration, spConfig config.ServiceProviderConfiguration, sessionManager *scs.Manager, cl AuthenticatingClient, storage tokenstorage.TokenStorage, redirectTemplate *template.Template) (Controller, error) {
 	// use the notifying token storage to automatically inform the cluster about changes in the token storage
 	ts := &tokenstorage.NotifyingTokenStorage{
 		Client:       cl,
-		TokenStorage: vaultStorage,
+		TokenStorage: storage,
 	}
 
 	var endpoint oauth2.Endpoint
@@ -99,10 +70,11 @@ func FromConfiguration(fullConfig config.Configuration, spConfig config.ServiceP
 	return &commonController{
 		Config:           spConfig,
 		JwtSigningSecret: fullConfig.SharedSecret,
-		Authenticator:    authtor,
 		K8sClient:        cl,
 		TokenStorage:     ts,
 		Endpoint:         endpoint,
 		BaseUrl:          fullConfig.BaseUrl,
+		SessionManager:   sessionManager,
+		RedirectTemplate: redirectTemplate,
 	}, nil
 }
