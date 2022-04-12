@@ -14,6 +14,7 @@
 package main
 
 import (
+	stderrors "errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -33,6 +34,7 @@ import (
 	"github.com/alexedwards/scs"
 	"github.com/alexedwards/scs/stores/memstore"
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/tokenstorage"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/alexflint/go-arg"
@@ -88,6 +90,22 @@ func CallbackErrorHandler(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(fmt.Sprintf("Error response returned to OAuth callback: %s. Message: %s ", errorMsg, errorDescription)))
 	}
 
+}
+
+func handleUpload(uploader *controllers.TokenUploader) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := uploader.Handle(r); err != nil {
+			if status := errors.APIStatus(nil); stderrors.As(err, &status) {
+				w.WriteHeader(int(status.Status().Code))
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+			zap.L().Error("error handling token upload", zap.Error(err))
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func main() {
@@ -162,6 +180,14 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 		return
 	}
 
+	tokenUploader := controllers.TokenUploader{
+		K8sClient: cl,
+		Storage: tokenstorage.NotifyingTokenStorage{
+			Client:       cl,
+			TokenStorage: strg,
+		},
+	}
+
 	// the session has 15 minutes timeout and stale sessions are cleaned every 5 minutes
 	sessionManager := scs.NewManager(memstore.New(5 * time.Minute))
 	sessionManager.Name("appstudio_spi_session")
@@ -172,6 +198,7 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 	router.HandleFunc("/ready", OkHandler).Methods("GET")
 	router.HandleFunc("/callback_success", CallbackSuccessHandler).Methods("GET")
 	router.NewRoute().Path("/{type}/callback").Queries("error", "", "error_description", "").HandlerFunc(CallbackErrorHandler)
+	router.NewRoute().Path("/token/{namespace}/{name}").HandlerFunc(handleUpload(&tokenUploader)).Methods("POST")
 
 	redirectTpl, err := template.ParseFiles("static/redirect_notice.html")
 	if err != nil {
