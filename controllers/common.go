@@ -19,11 +19,9 @@ import (
 	"html/template"
 	"net/http"
 
-	"github.com/alexedwards/scs"
-	v1 "k8s.io/api/authorization/v1"
-	"k8s.io/apimachinery/pkg/util/uuid"
-
 	"strings"
+
+	v1 "k8s.io/api/authorization/v1"
 
 	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
@@ -42,17 +40,14 @@ type commonController struct {
 	TokenStorage     tokenstorage.TokenStorage
 	Endpoint         oauth2.Endpoint
 	BaseUrl          string
-	SessionManager   *scs.Manager
 	RedirectTemplate *template.Template
+	Authenticator    *Authenticator
 }
 
 // exchangeState is the state that we're sending out to the SP after checking the anonymous oauth state produced by
-// the operator as the initial OAuth URL. Notice that the state doesn't contain any sensitive information. It only
-// contains the Key which is the key to the HTTP session that actually contains the authorization header to use when
-// finishing the OAuth flow.
+// the operator as the initial OAuth URL. Notice that the state doesn't contain any sensitive information.
 type exchangeState struct {
 	oauthstate.AnonymousOAuthState
-	Key string `json:"key"`
 }
 
 // exchangeResult this the result of the OAuth exchange with all the data necessary to store the token into the storage
@@ -93,20 +88,11 @@ func (c commonController) Authenticate(w http.ResponseWriter, r *http.Request) {
 		logErrorAndWriteResponse(w, http.StatusBadRequest, "failed to decode the OAuth state", err)
 		return
 	}
-
-	session := c.SessionManager.Load(r)
-
-	token := r.FormValue("k8s_token")
-
-	if token == "" {
-		token = ExtractTokenFromAuthorizationHeader(r.Header.Get("Authorization"))
-	}
-
-	if token == "" {
-		logDebugAndWriteResponse(w, http.StatusUnauthorized, "failed extract authorization info either from headers or form/query parameters")
+	token, err := c.Authenticator.GetToken(r)
+	if err != nil {
+		logErrorAndWriteResponse(w, http.StatusUnauthorized, "No active session was found. Please use `/login` method to authorize your request and try again.", err)
 		return
 	}
-
 	hasAccess, err := c.checkIdentityHasAccess(token, r, state)
 	if err != nil {
 		logErrorAndWriteResponse(w, http.StatusInternalServerError, "failed to determine if the authenticated user has access", err)
@@ -122,51 +108,25 @@ func (c commonController) Authenticate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flowKey := string(uuid.NewUUID())
-
-	flows := map[string]string{}
-
-	if err := session.GetObject("flows", &flows); err != nil {
-		logErrorAndWriteResponse(w, http.StatusInternalServerError, "failed to decode session data", err)
-		return
-	}
-
-	flows[flowKey] = token
-
-	if err := session.PutObject(w, "flows", flows); err != nil {
-		logErrorAndWriteResponse(w, http.StatusInternalServerError, "failed to encode session data", err)
-		return
-	}
-
 	keyedState := exchangeState{
 		AnonymousOAuthState: state,
-		Key:                 flowKey,
 	}
 
 	oauthCfg := c.newOAuth2Config()
 	oauthCfg.Endpoint = c.Endpoint
 	oauthCfg.Scopes = keyedState.Scopes
 
-	stateString, err = codec.Encode(&keyedState)
-	if err != nil {
-		logErrorAndWriteResponse(w, http.StatusInternalServerError, "failed to encode OAuth state", err)
-		return
-	}
-
-	url := oauthCfg.AuthCodeURL(stateString)
-
 	templateData := struct {
 		Url string
 	}{
-		Url: url,
+		Url: oauthCfg.AuthCodeURL(stateString),
 	}
-
+	zap.L().Info("Redirecting ", zap.String("url", templateData.Url))
 	err = c.RedirectTemplate.Execute(w, templateData)
 	if err != nil {
 		logErrorAndWriteResponse(w, http.StatusInternalServerError, "failed to return redirect notice HTML page", err)
 		return
 	}
-
 	zap.L().Debug("/authenticate ok")
 }
 
@@ -217,15 +177,9 @@ func (c commonController) finishOAuthExchange(ctx context.Context, r *http.Reque
 		return exchangeResult{result: oauthFinishError}, err
 	}
 
-	session := c.SessionManager.Load(r)
-	flows := map[string]string{}
-	if err = session.GetObject("flows", &flows); err != nil {
-		return exchangeResult{result: oauthFinishError}, err
-	}
-
-	authHeader := flows[state.Key]
-	if authHeader == "" {
-		return exchangeResult{result: oauthFinishK8sAuthRequired}, fmt.Errorf("no active oauth flow found for the state key")
+	k8sToken, err := c.Authenticator.GetToken(r)
+	if err != nil {
+		return exchangeResult{result: oauthFinishK8sAuthRequired}, fmt.Errorf("no active oauth session found")
 	}
 
 	// the state is ok, let's retrieve the token from the service provider
@@ -245,7 +199,7 @@ func (c commonController) finishOAuthExchange(ctx context.Context, r *http.Reque
 		exchangeState:       *state,
 		result:              oauthFinishAuthenticated,
 		token:               token,
-		authorizationHeader: authHeader,
+		authorizationHeader: k8sToken,
 	}, nil
 }
 

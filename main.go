@@ -14,48 +14,60 @@
 package main
 
 import (
+	"context"
 	stderrors "errors"
 	"fmt"
 	"html/template"
+
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
-	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
-	authz "k8s.io/api/authorization/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	certutil "k8s.io/client-go/util/cert"
-
 	"github.com/alexedwards/scs"
 	"github.com/alexedwards/scs/stores/memstore"
-	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/tokenstorage"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
 	"github.com/alexflint/go-arg"
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	"github.com/redhat-appstudio/service-provider-integration-oauth/controllers"
+	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
+	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
+	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/tokenstorage"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zapio"
+	authz "k8s.io/api/authorization/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-
-	"github.com/redhat-appstudio/service-provider-integration-oauth/controllers"
-	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/config"
-
-	"github.com/gorilla/mux"
-	"go.uber.org/zap"
+	certutil "k8s.io/client-go/util/cert"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type cliArgs struct {
-	ConfigFile string `arg:"-c, --config-file, env" default:"/etc/spi/config.yaml" help:"The location of the configuration file"`
-	Port       int    `arg:"-p, --port, env" default:"8000" help:"The port to listen on"`
-	DevMode    bool   `arg:"-d, --dev-mode, env" default:"false" help:"use dev-mode logging"`
-	KubeConfig string `arg:"-k, --kubeconfig, env" default:"" help:""`
-	// snake-case used because of environment variable naming (API_SERVER and API_SERVER_CA_PATH)
-	Api_Server         string `arg:"-a, --api-server, env" default:"" help:"host:port of the Kubernetes API server to use when handling HTTP requests"`
-	Api_Server_CA_Path string `arg:"-t, --ca-path, env" default:"" help:"the path to the CA certificate to use when connecting to the Kubernetes API server"`
+	ConfigFile      string `arg:"-c, --config-file, env" default:"/etc/spi/config.yaml" help:"The location of the configuration file"`
+	Addr            string `arg:"-a, --addr, env" default:"0.0.0.0:8000" help:"Address to listen on"`
+	AllowedOrigins  string `arg:"-o, --allowed-origins, env" default:"console.dev.redhat.com,prod.foo.redhat.com" help:"Comma-separated list of domains allowed for cross-domain requests"`
+	DevMode         bool   `arg:"-d, --dev-mode, env" default:"false" help:"use dev-mode logging"`
+	KubeConfig      string `arg:"-k, --kubeconfig, env" default:"" help:""`
+	ApiServer       string `arg:"-a, --api-server, env:API_SERVER" default:"" help:"host:port of the Kubernetes API server to use when handling HTTP requests"`
+	ApiServerCAPath string `arg:"-t, --ca-path, env:API_SERVER_CA_PATH" default:"" help:"the path to the CA certificate to use when connecting to the Kubernetes API server"`
+}
+
+func (args *cliArgs) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	enc.AddString("config-file", args.ConfigFile)
+	enc.AddString("addr", args.Addr)
+	enc.AddString("allowed-origins", args.AllowedOrigins)
+	enc.AddBool("dev-mode", args.DevMode)
+	enc.AddString("kubeconfig", args.KubeConfig)
+	enc.AddString("api-server", args.ApiServer)
+	enc.AddString("ca-path", args.ApiServerCAPath)
+	return nil
 }
 
 type viewData struct {
@@ -135,7 +147,7 @@ func main() {
 	undo := zap.ReplaceGlobals(logger)
 	defer undo()
 
-	zap.L().Debug("environment", zap.Strings("env", os.Environ()))
+	zap.L().Info("Starting OAuth service with environment", zap.Strings("env", os.Environ()), zap.Object("configuration", &args))
 
 	cfg, err := config.LoadFrom(args.ConfigFile)
 	if err != nil {
@@ -149,10 +161,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	start(cfg, args.Port, kubeConfig, args.DevMode)
+	start(cfg, args.Addr, strings.Split(args.AllowedOrigins, ","), kubeConfig, args.DevMode)
 }
 
-func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode bool) {
+func MiddlewareHandler(allowedOrigins []string, h http.Handler) http.Handler {
+	return handlers.LoggingHandler(&zapio.Writer{Log: zap.L(), Level: zap.InfoLevel},
+		handlers.CORS(handlers.AllowedOrigins(allowedOrigins),
+			handlers.AllowCredentials(),
+			handlers.AllowedHeaders([]string{"Accept", "Accept-Language", "Content-Language", "Origin", "Authorization"}))(h))
+}
+
+func start(cfg config.Configuration, addr string, allowedOrigins []string, kubeConfig *rest.Config, devmode bool) {
 	router := mux.NewRouter()
 
 	// insecure mode only allowed when the trusted root certificate is not specified...
@@ -165,6 +184,7 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 	// client here thus making the mapper not reach out to the target cluster at all.
 	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{})
 	mapper.Add(authz.SchemeGroupVersion.WithKind("SelfSubjectAccessReview"), meta.RESTScopeRoot)
+	//	mapper.Add(auth.SchemeGroupVersion.WithKind("TokenReview"), meta.RESTScopeRoot)
 	mapper.Add(v1beta1.GroupVersion.WithKind("SPIAccessToken"), meta.RESTScopeNamespace)
 	mapper.Add(v1beta1.GroupVersion.WithKind("SPIAccessTokenDataUpdate"), meta.RESTScopeNamespace)
 
@@ -195,11 +215,12 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 	sessionManager := scs.NewManager(memstore.New(5 * time.Minute))
 	sessionManager.Name("appstudio_spi_session")
 	sessionManager.IdleTimeout(15 * time.Minute)
-
+	authenticator := controllers.NewAuthenticator(sessionManager, cl)
 	//static routes first
 	router.HandleFunc("/health", OkHandler).Methods("GET")
 	router.HandleFunc("/ready", OkHandler).Methods("GET")
 	router.HandleFunc("/callback_success", CallbackSuccessHandler).Methods("GET")
+	router.HandleFunc("/login", authenticator.Login).Methods("POST")
 	router.NewRoute().Path("/{type}/callback").Queries("error", "", "error_description", "").HandlerFunc(CallbackErrorHandler)
 	router.NewRoute().Path("/token/{namespace}/{name}").HandlerFunc(handleUpload(&tokenUploader)).Methods("POST")
 
@@ -212,7 +233,7 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 	for _, sp := range cfg.ServiceProviders {
 		zap.L().Debug("initializing service provider controller", zap.String("type", string(sp.ServiceProviderType)), zap.String("url", sp.ServiceProviderBaseUrl))
 
-		controller, err := controllers.FromConfiguration(cfg, sp, sessionManager, cl, strg, redirectTpl)
+		controller, err := controllers.FromConfiguration(cfg, sp, authenticator, cl, strg, redirectTpl)
 		if err != nil {
 			zap.L().Error("failed to initialize controller: %s", zap.Error(err))
 		}
@@ -225,24 +246,56 @@ func start(cfg config.Configuration, port int, kubeConfig *rest.Config, devmode 
 		})).Methods("GET")
 	}
 
-	zap.L().Info("Starting the server", zap.Int("port", port))
-	err = http.ListenAndServe(fmt.Sprintf(":%d", port), router)
-	if err != nil {
-		zap.L().Error("failed to start the HTTP server", zap.Error(err))
+	zap.L().Info("Starting the server", zap.String("Addr", addr))
+	server := &http.Server{
+		Addr: addr,
+		// Good practice to set timeouts to avoid Slowloris attacks.
+		WriteTimeout: time.Second * 15,
+		ReadTimeout:  time.Second * 15,
+		IdleTimeout:  time.Second * 60,
+		Handler:      MiddlewareHandler(allowedOrigins, router),
 	}
+
+	// Run our server in a goroutine so that it doesn't block.
+	go func() {
+		if err := server.ListenAndServe(); err != nil {
+			zap.L().Error("failed to start the HTTP server", zap.Error(err))
+		}
+	}()
+
+	// Setting up signal capturing
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt)
+
+	// Waiting for SIGINT (kill -2)
+	<-stop
+
+	// Create a deadline to wait for.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Doesn't block if no connections, but will otherwise wait
+	// until the timeout deadline.
+	if err := server.Shutdown(ctx); err != nil {
+		zap.L().Fatal("OAuth server shutdown failed", zap.Error(err))
+	}
+	// Optionally, you could run srv.Shutdown in a goroutine and block on
+	// <-ctx.Done() if your application should wait for other services
+	// to finalize based on context cancellation.
+	zap.L().Info("OAuth server exited properly")
+	os.Exit(0)
 }
 
 func kubernetesConfig(args *cliArgs) (*rest.Config, error) {
 	if args.KubeConfig != "" {
 		return clientcmd.BuildConfigFromFlags("", args.KubeConfig)
-	} else if args.Api_Server != "" {
+	} else if args.ApiServer != "" {
 		// here we're essentially replicating what is done in rest.InClusterConfig() but we're using our own
 		// configuration - this is to support going through an alternative API server to the one we're running with...
 		// Note that we're NOT adding the Token or the TokenFile to the configuration here. This is supposed to be
 		// handled on per-request basis...
 		cfg := rest.Config{}
 
-		apiServerUrl, err := url.Parse(args.Api_Server)
+		apiServerUrl, err := url.Parse(args.ApiServer)
 		if err != nil {
 			return nil, err
 		}
@@ -251,12 +304,12 @@ func kubernetesConfig(args *cliArgs) (*rest.Config, error) {
 
 		tlsConfig := rest.TLSClientConfig{}
 
-		if args.Api_Server_CA_Path != "" {
+		if args.ApiServerCAPath != "" {
 			// rest.InClusterConfig is doing this most possibly only for early error handling so let's do the same
-			if _, err := certutil.NewPool(args.Api_Server_CA_Path); err != nil {
-				return nil, fmt.Errorf("expected to load root CA config from %s, but got err: %v", args.Api_Server_CA_Path, err)
+			if _, err := certutil.NewPool(args.ApiServerCAPath); err != nil {
+				return nil, fmt.Errorf("expected to load root CA config from %s, but got err: %v", args.ApiServerCAPath, err)
 			} else {
-				tlsConfig.CAFile = args.Api_Server_CA_Path
+				tlsConfig.CAFile = args.ApiServerCAPath
 			}
 		}
 

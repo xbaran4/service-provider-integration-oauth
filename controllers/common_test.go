@@ -27,9 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alexedwards/scs"
-	"github.com/alexedwards/scs/stores/memstore"
-
 	"github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -82,7 +79,9 @@ var _ = Describe("Controller", func() {
 		Fail("Could not find the token of the default service account in the test namespace", 1)
 		return ""
 	}
-
+	prepareAuthenticator := func(g Gomega) *Authenticator {
+		return NewAuthenticator(IT.SessionManager, IT.Client)
+	}
 	prepareController := func(g Gomega) *commonController {
 		tmpl, err := template.ParseFiles("../static/redirect_notice.html")
 		g.Expect(err).NotTo(HaveOccurred())
@@ -102,17 +101,33 @@ var _ = Describe("Controller", func() {
 				AuthStyle: oauth2.AuthStyleAutoDetect,
 			},
 			BaseUrl:          "https://spi.on.my.machine",
-			SessionManager:   scs.NewManager(memstore.New(1000000 * time.Hour)),
+			Authenticator:    prepareAuthenticator(g),
 			RedirectTemplate: tmpl,
 		}
 	}
 
-	authenticateFlow := func(g Gomega) (*commonController, *httptest.ResponseRecorder) {
+	loginFlow := func(g Gomega) (*Authenticator, *httptest.ResponseRecorder) {
 		token := grabK8sToken(g)
 
 		// This is the setup for the HTTP call to /github/authenticate
-		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s", prepareAnonymousState()), nil)
+		req := httptest.NewRequest("POST", "/", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+
+		c := prepareAuthenticator(g)
+
+		c.Login(res, req)
+
+		return c, res
+	}
+
+	authenticateFlow := func(g Gomega, cookies []*http.Cookie) (*commonController, *httptest.ResponseRecorder) {
+
+		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s", prepareAnonymousState()), nil)
+		for _, cookie := range cookies {
+			req.Header.Set("Cookie", cookie.String())
+		}
+
 		res := httptest.NewRecorder()
 
 		c := prepareController(g)
@@ -137,27 +152,24 @@ var _ = Describe("Controller", func() {
 		return redirect
 	}
 
-	It("additionally accepts data in POST", func() {
+	It("authenticate in POST", func() {
 		token := grabK8sToken(Default)
 
-		// This is the setup for the HTTP call to /github/authenticate
 		req := httptest.NewRequest("POST", "/", nil)
-		req.Form = url.Values{}
-		req.Form.Set("state", prepareAnonymousState())
-		req.Form.Set("k8s_token", token)
+		req.Header.Set("Authorization", "Bearer "+token)
 		res := httptest.NewRecorder()
 
-		c := prepareController(Default)
+		c := prepareAuthenticator(Default)
 
-		c.Authenticate(res, req)
+		c.Login(res, req)
 		Expect(res.Code).To(Equal(http.StatusOK))
+		Expect(res.Result().Cookies()).NotTo(BeEmpty())
 	})
 
 	It("redirects to SP OAuth URL with state and scopes", func() {
-		_, res := authenticateFlow(Default)
-
+		_, res := loginFlow(Default)
 		Expect(res.Code).To(Equal(http.StatusOK))
-
+		_, res = authenticateFlow(Default, res.Result().Cookies())
 		redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
 		Expect(redirect.Scheme).To(Equal("https"))
@@ -168,7 +180,7 @@ var _ = Describe("Controller", func() {
 		Expect(redirect.Query().Get("response_type")).To(Equal("code"))
 		Expect(redirect.Query().Get("state")).NotTo(BeEmpty())
 		Expect(redirect.Query().Get("scope")).To(Equal("a b"))
-		Expect(res.Result().Cookies()).NotTo(BeEmpty())
+		Expect(res.Result().Cookies()).To(BeEmpty())
 	})
 
 	When("OAuth initiated", func() {
@@ -204,7 +216,9 @@ var _ = Describe("Controller", func() {
 			// the need for this will disappear once we don't update the token anymore from OAuth service (which is
 			// the plan).
 			Eventually(func(g Gomega) {
-				controller, res := authenticateFlow(g)
+				_, res := loginFlow(g)
+				sessionCookies := res.Result().Cookies()
+				controller, res := authenticateFlow(g, sessionCookies)
 
 				redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
@@ -212,7 +226,9 @@ var _ = Describe("Controller", func() {
 
 				// simulate github redirecting back to our callback endpoint...
 				req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s&code=123", state), nil)
-				req.Header.Set("Cookie", res.Result().Cookies()[0].String())
+				for _, cookie := range sessionCookies {
+					req.Header.Set("Cookie", cookie.String())
+				}
 				res = httptest.NewRecorder()
 
 				// The callback handler will be reaching out to github to exchange the code for the token.. let's fake that
@@ -252,7 +268,9 @@ var _ = Describe("Controller", func() {
 			// the need for this will disappear once we don't update the token anymore from OAuth service (which is
 			// the plan).
 			Eventually(func(g Gomega) {
-				controller, res := authenticateFlow(g)
+				_, res := loginFlow(g)
+				sessionCookies := res.Result().Cookies()
+				controller, res := authenticateFlow(g, res.Result().Cookies())
 
 				redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
@@ -260,7 +278,9 @@ var _ = Describe("Controller", func() {
 
 				// simulate github redirecting back to our callback endpoint...
 				req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s&code=123&redirect_after_login=https://redirect.to?foo=bar", state), nil)
-				req.Header.Set("Cookie", res.Result().Cookies()[0].String())
+				for _, cookie := range sessionCookies {
+					req.Header.Set("Cookie", cookie.String())
+				}
 				res = httptest.NewRecorder()
 
 				// The callback handler will be reaching out to github to exchange the code for the token.. let's fake that
@@ -285,7 +305,6 @@ var _ = Describe("Controller", func() {
 						return nil, fmt.Errorf("unexpected request to: %s", r.URL.String())
 					}),
 				})
-
 				controller.Callback(ctx, res, req)
 
 				g.Expect(res.Code).To(Equal(http.StatusFound))
