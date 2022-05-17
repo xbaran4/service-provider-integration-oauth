@@ -183,14 +183,14 @@ func TestMiddlewareHandlerCorsPart(t *testing.T) {
 	// Create a request to pass to our handler. We don't have any query parameters for now, so we'll
 	// pass 'nil' as the third parameter.
 	req, err := http.NewRequest("GET", "/github/callback?error=foo&error_description=bar", nil)
-	req.Header.Set("Origin", "prod.foo.redhat.com")
+	req.Header.Set("Origin", "https://prod.foo.redhat.com")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// We create a ResponseRecorder (which satisfies http.ResponseWriter) to record the response.
 	rr := httptest.NewRecorder()
-	handler := MiddlewareHandler([]string{"console.dev.redhat.com", "prod.foo.redhat.com"}, http.HandlerFunc(OkHandler))
+	handler := MiddlewareHandler([]string{"https://console.dev.redhat.com", "https://prod.foo.redhat.com"}, http.HandlerFunc(OkHandler))
 
 	// Our handlers satisfy http.Handler, so we can call their ServeHTTP method
 	// directly and pass in our Request and ResponseRecorder.
@@ -203,7 +203,7 @@ func TestMiddlewareHandlerCorsPart(t *testing.T) {
 	}
 
 	// Check the status code is what we expect.
-	if allowOrigin := rr.Header().Get("Access-Control-Allow-Origin"); allowOrigin != "prod.foo.redhat.com" {
+	if allowOrigin := rr.Header().Get("Access-Control-Allow-Origin"); allowOrigin != "https://prod.foo.redhat.com" {
 		t.Errorf("handler returned wrong header \"Access-Control-Allow-Origin\": got %v want %v",
 			allowOrigin, "prod.foo.redhat.com")
 	}
@@ -233,7 +233,7 @@ func TestMiddlewareHandlerCorsPart2(t *testing.T) {
 
 	// We create a ResponseRecorder (which satisfies http.ResponseWriter) to record the response.
 	rr := httptest.NewRecorder()
-	handler := MiddlewareHandler([]string{"https://file-retriever-server-service-spi-system.apps.cluster-flmv6.flmv6.sandbox1324.opentlc.com"}, http.HandlerFunc(OkHandler))
+	handler := MiddlewareHandler([]string{"https://file-retriever-server-service-spi-system.apps.cluster-flmv6.flmv6.sandbox1324.opentlc.com", "http:://acme.com"}, http.HandlerFunc(OkHandler))
 
 	// Our handlers satisfy http.Handler, so we can call their ServeHTTP method
 	// directly and pass in our Request and ResponseRecorder.

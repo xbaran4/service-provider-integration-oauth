@@ -52,7 +52,7 @@ import (
 type cliArgs struct {
 	ConfigFile      string `arg:"-c, --config-file, env" default:"/etc/spi/config.yaml" help:"The location of the configuration file"`
 	Addr            string `arg:"-a, --addr, env" default:"0.0.0.0:8000" help:"Address to listen on"`
-	AllowedOrigins  string `arg:"-o, --allowed-origins, env" default:"console.dev.redhat.com,prod.foo.redhat.com" help:"Comma-separated list of domains allowed for cross-domain requests"`
+	AllowedOrigins  string `arg:"-o, --allowed-origins, env" default:"https://console.dev.redhat.com,https://prod.foo.redhat.com" help:"Comma-separated list of domains allowed for cross-domain requests"`
 	DevMode         bool   `arg:"-d, --dev-mode, env" default:"false" help:"use dev-mode logging"`
 	KubeConfig      string `arg:"-k, --kubeconfig, env" default:"" help:""`
 	ApiServer       string `arg:"-a, --api-server, env:API_SERVER" default:"" help:"host:port of the Kubernetes API server to use when handling HTTP requests"`
