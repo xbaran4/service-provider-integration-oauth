@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/spi-shared/oauthstate"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	. "github.com/onsi/ginkgo"
@@ -61,24 +60,27 @@ var _ = Describe("Controller", func() {
 	}
 
 	grabK8sToken := func(g Gomega) string {
-		var secrets *corev1.SecretList
-
-		g.Eventually(func(gg Gomega) {
+		var result string
+		//Obtaining token implemented with fallback-retry approach because
+		//for OpenShift token delivering may take up to 1-3 seconds,
+		//for Minikube that happens almost instantaneously.
+		g.Eventually(func(gg Gomega) bool {
 			var err error
-			secrets, err = IT.Clientset.CoreV1().Secrets(IT.Namespace).List(context.TODO(), metav1.ListOptions{})
+			secrets, err := IT.Clientset.CoreV1().Secrets(IT.Namespace).List(context.TODO(), metav1.ListOptions{})
 			gg.Expect(err).NotTo(HaveOccurred())
 			gg.Expect(secrets.Items).NotTo(BeEmpty())
-		}).Should(Succeed())
-
-		for _, s := range secrets.Items {
-			if s.Annotations["kubernetes.io/service-account.name"] == "default" {
-				return string(s.Data["token"])
+			for _, s := range secrets.Items {
+				if s.Annotations["kubernetes.io/service-account.name"] == "default" && len(s.Data["token"]) > 0 {
+					result = string(s.Data["token"])
+					return true
+				}
 			}
-		}
+			return false
+		}).Should(BeTrue(), "Could not find the token of the default service account in the test namespace")
 
-		Fail("Could not find the token of the default service account in the test namespace", 1)
-		return ""
+		return result
 	}
+
 	prepareAuthenticator := func(g Gomega) *Authenticator {
 		return NewAuthenticator(IT.SessionManager, IT.Client)
 	}
