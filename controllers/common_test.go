@@ -87,7 +87,6 @@ var _ = Describe("Controller", func() {
 	prepareController := func(g Gomega) *commonController {
 		tmpl, err := template.ParseFiles("../static/redirect_notice.html")
 		g.Expect(err).NotTo(HaveOccurred())
-
 		return &commonController{
 			Config: config.ServiceProviderConfiguration{
 				ClientId:            "clientId",
@@ -105,6 +104,7 @@ var _ = Describe("Controller", func() {
 			BaseUrl:          "https://spi.on.my.machine",
 			Authenticator:    prepareAuthenticator(g),
 			RedirectTemplate: tmpl,
+			StateStorage:     NewStateStorage(IT.SessionManager),
 		}
 	}
 
@@ -125,9 +125,9 @@ var _ = Describe("Controller", func() {
 		return c, res
 	}
 
-	authenticateFlow := func(g Gomega, cookies []*http.Cookie) (*commonController, *httptest.ResponseRecorder) {
-
-		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s", prepareAnonymousState()), nil)
+	authenticateFlow := func(g Gomega, cookies []*http.Cookie) (*commonController, string, *httptest.ResponseRecorder) {
+		spiState := prepareAnonymousState()
+		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s", spiState), nil)
 		for _, cookie := range cookies {
 			req.Header.Set("Cookie", cookie.String())
 		}
@@ -140,12 +140,13 @@ var _ = Describe("Controller", func() {
 			c.Authenticate(w, r)
 		})).ServeHTTP(res, req)
 
-		return c, res
+		return c, spiState, res
 	}
 
-	authenticateFlowQueryParam := func(g Gomega) (*commonController, *httptest.ResponseRecorder) {
+	authenticateFlowQueryParam := func(g Gomega) (*commonController, string, *httptest.ResponseRecorder) {
 		token := grabK8sToken(g)
-		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s&k8s_token=%s", prepareAnonymousState(), token), nil)
+		spiState := prepareAnonymousState()
+		req := httptest.NewRequest("GET", fmt.Sprintf("/?state=%s&k8s_token=%s", spiState, token), nil)
 
 		res := httptest.NewRecorder()
 
@@ -155,7 +156,7 @@ var _ = Describe("Controller", func() {
 			c.Authenticate(w, r)
 		})).ServeHTTP(res, req)
 
-		return c, res
+		return c, spiState, res
 	}
 
 	getRedirectUrlFromAuthenticateResponse := func(g Gomega, res *httptest.ResponseRecorder) *url.URL {
@@ -192,7 +193,7 @@ var _ = Describe("Controller", func() {
 	It("redirects to SP OAuth URL with state and scopes", func() {
 		_, res := loginFlow(Default)
 		Expect(res.Code).To(Equal(http.StatusOK))
-		_, res = authenticateFlow(Default, res.Result().Cookies())
+		_, spiState, res := authenticateFlow(Default, res.Result().Cookies())
 		redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
 		Expect(redirect.Scheme).To(Equal("https"))
@@ -202,6 +203,7 @@ var _ = Describe("Controller", func() {
 		Expect(redirect.Query().Get("redirect_uri")).To(Equal("https://spi.on.my.machine/github/callback"))
 		Expect(redirect.Query().Get("response_type")).To(Equal("code"))
 		Expect(redirect.Query().Get("state")).NotTo(BeEmpty())
+		Expect(redirect.Query().Get("state")).NotTo(Equal(spiState))
 		Expect(redirect.Query().Get("scope")).To(Equal("a b"))
 		Expect(res.Result().Cookies()).NotTo(BeEmpty())
 		cookie := res.Result().Cookies()[0]
@@ -209,7 +211,7 @@ var _ = Describe("Controller", func() {
 	})
 
 	It("redirects to SP OAuth URL with state and scopes. Alternative login", func() {
-		_, res := authenticateFlowQueryParam(Default)
+		_, spiState, res := authenticateFlowQueryParam(Default)
 		redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
 		Expect(redirect.Scheme).To(Equal("https"))
@@ -219,6 +221,7 @@ var _ = Describe("Controller", func() {
 		Expect(redirect.Query().Get("redirect_uri")).To(Equal("https://spi.on.my.machine/github/callback"))
 		Expect(redirect.Query().Get("response_type")).To(Equal("code"))
 		Expect(redirect.Query().Get("state")).NotTo(BeEmpty())
+		Expect(redirect.Query().Get("state")).NotTo(Equal(spiState))
 		Expect(redirect.Query().Get("scope")).To(Equal("a b"))
 		Expect(res.Result().Cookies()).NotTo(BeEmpty())
 		cookie := res.Result().Cookies()[0]
@@ -260,7 +263,7 @@ var _ = Describe("Controller", func() {
 			Eventually(func(g Gomega) {
 				_, res := loginFlow(g)
 				sessionCookies := res.Result().Cookies()
-				controller, res := authenticateFlow(g, sessionCookies)
+				controller, _, res := authenticateFlow(g, sessionCookies)
 
 				redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
@@ -282,7 +285,7 @@ var _ = Describe("Controller", func() {
 					Expiry:       time.Now(),
 				})
 				serviceProviderReached := false
-				ctx := context.WithValue(context.TODO(), oauth2.HTTPClient, &http.Client{
+				ctxVal := &http.Client{
 					Transport: fakeRoundTrip(func(r *http.Request) (*http.Response, error) {
 						if strings.HasPrefix(r.URL.String(), "https://special.sp") {
 							serviceProviderReached = true
@@ -296,10 +299,10 @@ var _ = Describe("Controller", func() {
 
 						return nil, fmt.Errorf("unexpected request to: %s", r.URL.String())
 					}),
-				})
+				}
 
 				IT.SessionManager.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					controller.Callback(ctx, w, r)
+					controller.Callback(context.WithValue(r.Context(), oauth2.HTTPClient, ctxVal), w, r)
 				})).ServeHTTP(res, req)
 
 				g.Expect(res.Code).To(Equal(http.StatusFound))
@@ -315,7 +318,7 @@ var _ = Describe("Controller", func() {
 			Eventually(func(g Gomega) {
 				_, res := loginFlow(g)
 				sessionCookies := res.Result().Cookies()
-				controller, res := authenticateFlow(g, res.Result().Cookies())
+				controller, _, res := authenticateFlow(g, res.Result().Cookies())
 
 				redirect := getRedirectUrlFromAuthenticateResponse(Default, res)
 
@@ -336,7 +339,7 @@ var _ = Describe("Controller", func() {
 					RefreshToken: "refresh",
 					Expiry:       time.Now(),
 				})
-				ctx := context.WithValue(context.TODO(), oauth2.HTTPClient, &http.Client{
+				ctxVal := &http.Client{
 					Transport: fakeRoundTrip(func(r *http.Request) (*http.Response, error) {
 						if strings.HasPrefix(r.URL.String(), "https://special.sp") {
 							return &http.Response{
@@ -349,10 +352,10 @@ var _ = Describe("Controller", func() {
 
 						return nil, fmt.Errorf("unexpected request to: %s", r.URL.String())
 					}),
-				})
+				}
 
 				IT.SessionManager.LoadAndSave(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					controller.Callback(ctx, w, r)
+					controller.Callback(context.WithValue(r.Context(), oauth2.HTTPClient, ctxVal), w, r)
 				})).ServeHTTP(res, req)
 
 				g.Expect(res.Code).To(Equal(http.StatusFound))
