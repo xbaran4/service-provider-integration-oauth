@@ -11,7 +11,7 @@ require (
 	github.com/hashicorp/vault v1.11.0
 	github.com/onsi/ginkgo v1.16.5
 	github.com/onsi/gomega v1.19.0
-	github.com/redhat-appstudio/service-provider-integration-operator v0.6.9
+	github.com/redhat-appstudio/service-provider-integration-operator v0.6.10-0.20220720121320-455fa360ceed
 	github.com/stretchr/testify v1.8.0
 	go.uber.org/zap v1.21.0
 	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8
@@ -118,6 +118,7 @@ require (
 	github.com/hashicorp/raft-snapshot v1.0.4 // indirect
 	github.com/hashicorp/vault-plugin-secrets-kv v0.12.1 // indirect
 	github.com/hashicorp/vault/api v1.7.2 // indirect
+	github.com/hashicorp/vault/api/auth/approle v0.1.0 // indirect
 	github.com/hashicorp/vault/api/auth/kubernetes v0.1.0 // indirect
 	github.com/hashicorp/vault/sdk v0.5.2 // indirect
 	github.com/hashicorp/vic v1.5.1-0.20190403131502-bbfe86ec9443 // indirect
