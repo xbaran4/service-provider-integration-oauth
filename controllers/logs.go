@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/go-logr/logr"
+
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/logs"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -42,4 +44,15 @@ func LogDebugAndWriteResponse(ctx context.Context, w http.ResponseWriter, status
 	if err != nil {
 		log.Error(err, "error recording response error message")
 	}
+}
+
+// AuditLogWithTokenInfo logs message related to particular SPIAccessToken into audit logger
+func AuditLogWithTokenInfo(ctx context.Context, msg string, namespace string, token string, keysAndValues ...interface{}) {
+	keysAndValues = append(keysAndValues, "namespace", namespace, "token", token)
+	AuditLog(ctx).Info(msg, keysAndValues...)
+}
+
+// AuditLog returns logger prepared with audit markers
+func AuditLog(ctx context.Context) logr.Logger {
+	return log.FromContext(ctx, "audit", "true")
 }
