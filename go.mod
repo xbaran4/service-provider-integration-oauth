@@ -10,11 +10,12 @@ require (
 	github.com/gorilla/handlers v1.5.1
 	github.com/gorilla/mux v1.8.0
 	github.com/hashicorp/vault v1.11.2
+	github.com/kcp-dev/logicalcluster/v2 v2.0.0-alpha.1
 	github.com/onsi/ginkgo v1.16.5
-	github.com/onsi/gomega v1.20.0
-	github.com/redhat-appstudio/service-provider-integration-operator v0.7.4-0.20220831090023-12c085728913
+	github.com/onsi/gomega v1.20.2
+	github.com/redhat-appstudio/service-provider-integration-operator v0.7.4-0.20220913090241-7af7534de0f6
 	github.com/stretchr/testify v1.8.0
-	go.uber.org/zap v1.21.0
+	go.uber.org/zap v1.23.0
 	golang.org/x/oauth2 v0.0.0-20211104180415-d3ed0bb246c8
 	k8s.io/api v0.24.3
 	k8s.io/apimachinery v0.24.3
@@ -148,7 +149,6 @@ require (
 	github.com/joyent/triton-go v1.7.1-0.20200416154420-6801d15b779f // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kcp-dev/apimachinery v0.0.0-20220803185518-868856d14e8a // indirect
-	github.com/kcp-dev/logicalcluster/v2 v2.0.0-alpha.1 // indirect
 	github.com/kelseyhightower/envconfig v1.4.0 // indirect
 	github.com/keybase/go-crypto v0.0.0-20190403132359-d65b6b94177f // indirect
 	github.com/linode/linodego v0.7.1 // indirect
@@ -203,9 +203,9 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/crypto v0.0.0-20220622213112-05595931fe9d // indirect
-	golang.org/x/net v0.0.0-20220425223048-2871e0cb64e4 // indirect
+	golang.org/x/net v0.0.0-20220722155237-a158d28d115b // indirect
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
-	golang.org/x/sys v0.0.0-20220503163025-988cb79eb6c6 // indirect
+	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f // indirect
 	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/time v0.0.0-20220210224613-90d013bbcef8 // indirect

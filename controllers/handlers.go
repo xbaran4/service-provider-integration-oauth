@@ -20,6 +20,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/kcp-dev/logicalcluster/v2"
+
 	"github.com/go-jose/go-jose/v3/json"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
@@ -85,6 +87,9 @@ func HandleUpload(uploader TokenUploader) func(http.ResponseWriter, *http.Reques
 		vars := mux.Vars(r)
 		tokenObjectName := vars["name"]
 		tokenObjectNamespace := vars["namespace"]
+		if tokenObjectKcpWorkspace, hasKcpWorkspace := vars["kcpWorkspace"]; hasKcpWorkspace {
+			ctx = logicalcluster.WithCluster(ctx, logicalcluster.New(tokenObjectKcpWorkspace))
+		}
 
 		if len(tokenObjectName) < 1 || len(tokenObjectNamespace) < 1 {
 			LogDebugAndWriteResponse(r.Context(), w, http.StatusInternalServerError, "Incorrect service deployment. Token name and namespace can't be omitted or empty.")
