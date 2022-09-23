@@ -14,8 +14,10 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	"html/template"
+	kubeErrors "k8s.io/apimachinery/pkg/api/errors"
 	"net/http"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -108,6 +110,10 @@ func HandleUpload(uploader TokenUploader) func(http.ResponseWriter, *http.Reques
 		}
 
 		if err := uploader.Upload(ctx, tokenObjectName, tokenObjectNamespace, data); err != nil {
+			if unwrap := errors.Unwrap(err); kubeErrors.IsNotFound(unwrap) {
+				LogErrorAndWriteResponse(r.Context(), w, http.StatusNotFound, "specified SPIAccessToken does not exist", err)
+				return
+			}
 			LogErrorAndWriteResponse(r.Context(), w, http.StatusInternalServerError, "failed to upload the token", err)
 			return
 		}
