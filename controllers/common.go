@@ -22,6 +22,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kcp-dev/logicalcluster/v2"
+
 	"github.com/redhat-appstudio/service-provider-integration-operator/pkg/logs"
 
 	v1 "k8s.io/api/authorization/v1"
@@ -147,6 +149,7 @@ func (c commonController) Callback(ctx context.Context, w http.ResponseWriter, r
 		LogErrorAndWriteResponse(ctx, w, http.StatusBadRequest, "error in Service Provider token exchange", err)
 		return
 	}
+	ctx = logicalcluster.WithCluster(ctx, logicalcluster.New(exchange.TokenKcpWorkspace))
 
 	if exchange.result == oauthFinishK8sAuthRequired {
 		LogErrorAndWriteResponse(ctx, w, http.StatusUnauthorized, "could not authenticate to Kubernetes", err)
@@ -246,6 +249,7 @@ func (c *commonController) checkIdentityHasAccess(token string, req *http.Reques
 	}
 
 	ctx := WithAuthIntoContext(token, req.Context())
+	ctx = logicalcluster.WithCluster(ctx, logicalcluster.New(state.TokenKcpWorkspace))
 
 	if err := c.K8sClient.Create(ctx, &review); err != nil {
 		return false, fmt.Errorf("failed to create SelfSubjectAccessReview: %w", err)
