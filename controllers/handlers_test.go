@@ -22,6 +22,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
 	"github.com/gorilla/mux"
 	api "github.com/redhat-appstudio/service-provider-integration-operator/api/v1beta1"
 	"github.com/stretchr/testify/assert"
@@ -186,6 +189,40 @@ func TestUploader_FailWithEmptyToken(t *testing.T) {
 	if string(data) != "access token can't be omitted or empty" {
 		t.Errorf("expected 'access token can't be omitted or empty' got '%v'", string(data))
 	}
+}
+
+func TestUploader_FailWithAbsentSpiAccessToken(t *testing.T) {
+	uploader := UploadFunc(func(ctx context.Context, tokenObjectName string, tokenObjectNamespace string, data *api.Token) error {
+		assert.Equal(t, "john", tokenObjectName)
+		assert.Equal(t, "namespace", tokenObjectNamespace)
+
+		return fmt.Errorf("mocking a missing SPIAccessToken: %w", errors.NewNotFound(schema.GroupResource{
+			Group:    "testGroup",
+			Resource: "testSPIAccessToken",
+		}, tokenObjectName))
+	})
+
+	req, err := http.NewRequest("POST", "/token/namespace/john", bytes.NewBuffer([]byte(`{"access_token": "2022"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer macky")
+
+	w := httptest.NewRecorder()
+	var router = mux.NewRouter()
+	router.NewRoute().Path("/token/{namespace}/{name}").HandlerFunc(HandleUpload(uploader)).Methods("POST")
+
+	router.ServeHTTP(w, req)
+	res := w.Result()
+	defer res.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, res.StatusCode)
+
+	data, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Contains(t, string(data), "mocking a missing SPIAccessToken")
 }
 
 func TestUploader_FailWithoutAuthorization(t *testing.T) {
